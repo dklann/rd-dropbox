@@ -18,7 +18,7 @@ type credentials struct {
 	database string
 }
 
-type RowDropbox struct {
+type rowDropbx struct {
 	id      int
 	path    string
 	logPath string
@@ -29,9 +29,9 @@ var (
 )
 
 // Snarf all the rows in the DROPBOX table and return a slice of rowDropbox.
-func getDropboxPaths(paths []RowDropbox) []RowDropbox {
+func getDropboxPaths(paths []rowDropbx) []rowDropbx {
 	var rowCount int
-	var thisRow RowDropbox
+	var thisRow rowDropbx
 
 	db, err := sql.Open("mysql", "rduser:8-XNmVk1WYHYgXEE@tcp(service)/Rivendell")
 	if err != nil {
@@ -78,7 +78,7 @@ func getDropboxPaths(paths []RowDropbox) []RowDropbox {
 }
 
 func main() {
-	var paths []RowDropbox
+	var paths []rowDropbx
 
 	kingpin.CommandLine.HelpFlag.Short('h')
 	kingpin.Version("0.0.1")
@@ -87,13 +87,38 @@ func main() {
 	paths = getDropboxPaths(paths)
 
 	for i := range paths {
-		fmt.Printf("Dropbox ID: %d, Path:%s, Log Path:%s\n", paths[i].id, paths[i].path, paths[i].logPath)
-
+		// Check (and attempt to correct) the dropbox path spec.
 		if pathInfo, err := os.Stat(path.Dir(paths[i].path)); os.IsNotExist(err) {
-			fmt.Printf("%s does not seem to exist.\n", path.Dir(paths[i].path))
+			fmt.Fprintf(os.Stderr, "Path spec directory '%s' does not seem to exist. I'll try to create it.\n", path.Dir(paths[i].path))
+			err = os.MkdirAll(path.Dir(paths[i].path), 0755)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "main: Unable to create path spec directory '%s' (%s).\n", path.Dir(paths[i].path), err.Error())
+			}
+		} else if os.IsPermission(err) {
+			fmt.Fprintf(os.Stderr, "Path spec directory '%s' is not readable. I'll try to fix it.\n", path.Dir(paths[i].path))
+			err = os.Chmod(path.Dir(paths[i].path), 0755)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Unable to change permissions on directory '%s' (%s). You're on your own.\n", path.Dir(paths[i].path), err.Error())
+			}
 		} else {
 			if *verbose {
-				fmt.Printf("Dir %v, mode: %o\n", pathInfo.IsDir(), pathInfo.Mode())
+				fmt.Printf("Path spec dir '%s': %v, mode: %o\n", path.Dir(paths[i].path), pathInfo.IsDir(), pathInfo.Mode())
+			}
+		}
+
+		// Check (and attempt to correct) the dropbox logPath spec.
+		if pathInfo, err := os.Stat(path.Dir(paths[i].logPath)); os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Log directory '%s' does not seem to exist. I'll try to create it.\n", path.Dir(paths[i].logPath))
+			err = os.MkdirAll(path.Dir(paths[i].logPath), 0755)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "main: Unable to create log path directory '%s' (%s).\n", path.Dir(paths[i].logPath), err.Error())
+			}
+		} else if os.IsPermission(err) {
+			fmt.Fprintf(os.Stderr, "Log path directory '%s' is not readable. I'll try to fix it.\n", path.Dir(paths[i].logPath))
+			err = os.MkdirAll(path.Dir(paths[i].logPath), 0755)
+		} else {
+			if *verbose {
+				fmt.Printf("Log dir '%s': %v, mode: %o\n", path.Dir(paths[i].logPath), pathInfo.IsDir(), pathInfo.Mode())
 			}
 		}
 	}
