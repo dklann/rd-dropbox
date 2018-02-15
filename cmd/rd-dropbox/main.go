@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path"
+	"time"
 
 	"github.com/shirou/gopsutil/process"
 
@@ -16,10 +18,11 @@ import (
 )
 
 type rowDropbox struct {
-	id       int
-	path     string
-	logPath  string
-	pidFound bool
+	id          int
+	path        string
+	logPath     string
+	rdimportPID int32
+	proc        process.Process
 }
 
 // DropBoxer is an interface to the rowDropbox type.
@@ -106,6 +109,7 @@ func (p rowDropbox) getDropboxPaths() []rowDropbox {
 func main() {
 	p := rowDropbox{}
 	var paths []rowDropbox
+	var restartPIDs []int32
 
 	kingpin.CommandLine.HelpFlag.Short('h')
 	kingpin.UsageTemplate(kingpin.CompactUsageTemplate).Version("0.0.1").Author("Broadcast Tool & Die, David Klann")
@@ -187,7 +191,9 @@ func main() {
 										if *verbose {
 											fmt.Printf("\tmain: Found process ID %d for dropbox ID %d (%s)\n", processList[p].Pid, paths[i].id, path.Dir(paths[i].path))
 										}
-										paths[i].pidFound = true
+										paths[i].rdimportPID = processList[p].Pid
+										paths[i].proc = *processList[p]
+										restartPIDs = append(restartPIDs, processList[p].Pid)
 										break
 									}
 								}
@@ -199,8 +205,88 @@ func main() {
 				} else {
 					fmt.Fprintf(os.Stderr, "Trouble getting the current list of running processes: %v\n", err)
 				}
-				if !paths[i].pidFound {
+				if paths[i].rdimportPID < 1 {
 					fmt.Fprintf(os.Stderr, "Unable to find a running process for dropbox ID %d (%s)\n", paths[i].id, path.Dir(paths[i].path))
+				}
+			}
+		}
+	}
+
+	// Completed checking the paths and running processes,
+	// now restart rdcatchd(8) only if we are missing any PIDs.
+	if len(restartPIDs) == len(paths) {
+		fmt.Println("Yay! All Rivendell dropboxes are running.")
+	} else {
+		fmt.Fprintf(os.Stderr, "Missing one or more rdimport processes, attempting to stop all remaining process ...\n")
+		// Kill the remaining instances of rdimport
+		for p := range restartPIDs {
+			for r := range paths {
+				if paths[r].rdimportPID == restartPIDs[p] {
+					if *verbose {
+						fmt.Printf("\tkilling proccess for dropbox path %s ID: %d ...", paths[r].path, paths[r].proc.Pid)
+					}
+					if err := paths[r].proc.Kill(); err != nil {
+						fmt.Fprintf(os.Stderr, "Error attempting to stop dropbox PID %d: %#v", paths[r].proc.Pid, err)
+					} else {
+						if *verbose {
+							fmt.Println(" killed.")
+						}
+					}
+				}
+			}
+		}
+		// kill and restart rdcatchd(8)
+		if processList, err := process.Processes(); err == nil {
+			for p := range processList {
+				if pName, _ := processList[p].Name(); pName == "rdcatchd" {
+					if *verbose {
+						fmt.Printf("\tkilling %s process ID %d ...", pName, processList[p].Pid)
+					}
+					if err := processList[p].Kill(); err != nil {
+						fmt.Fprintf(os.Stderr, "Error attempting to stop dropbox manager service 'rdcatchd': %#v\n", err)
+					} else {
+						if *verbose {
+							fmt.Println(" killed.")
+						}
+					}
+				}
+			}
+		}
+		duration := time.Duration(4) * time.Second
+		time.Sleep(duration) // pause long enough for rdcatchd to restart
+
+		// See if rdcatchd(8) was restarted by system services (systemd(8), upstart*8), svc(8), etc.),
+		// and restart it if not.
+		rdcatchdPIDfound := false
+		if processList, err := process.Processes(); err == nil {
+			for p := range processList {
+				if pName, err := processList[p].Name(); pName == "rdcatchd" {
+					rdcatchdPIDfound = true
+					if *verbose {
+						fmt.Printf("\t%s was restarted: new process ID %d ...", pName, processList[p].Pid)
+					}
+				} else if err != nil {
+					fmt.Fprintf(os.Stderr, "Error retrieving info about rdcatchd process (%v)", err)
+				}
+			}
+		}
+		if rdcatchdPIDfound {
+			if *verbose {
+				fmt.Println("rdcatchd seems to have been restarted for us. Moving along now ...")
+			}
+		} else {
+			// Not found, so we need to restart it. First, make sure we can see the executable.
+			// Note that rdcatchd puts itself into the background. Grrrrr...
+			if rdcatchdPath, err := exec.LookPath("rdcatchd"); err != nil {
+				log.Fatal("Cannot find executable 'rdcatchd' in $PATH")
+			} else {
+				command := exec.Command(rdcatchdPath)
+				if err := command.Run(); err != nil {
+					log.Fatalf("Oh No! Could not launch command '%s': %#v\n", rdcatchdPath, err)
+				} else {
+					if *verbose {
+						fmt.Printf("\tsuccessfully (re)started rdcatchd\n")
+					}
 				}
 			}
 		}
