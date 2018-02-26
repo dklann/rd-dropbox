@@ -144,7 +144,7 @@ func main() {
 			// elements.
 			for i := len(paths) - 1; i >= 0; i-- {
 				if !validPath.MatchString(paths[i].path) {
-					fmt.Fprintf(os.Stderr, "Error: Dropbox path spec '%s' (dropbox ID %d) is invalid. Correct this in order to have a properly working dropbox.\n", paths[i].path, paths[i].id)
+					log.Printf("Error: Dropbox path spec '%s' (dropbox ID %d) is invalid. Correct this in order to have a properly working dropbox.\n", paths[i].path, paths[i].id)
 					// Remove this item so we do not restart rdcatchd(8) for an invalid path spec.
 					if i == len(paths)-1 {
 						paths = append(paths[:i])
@@ -160,7 +160,8 @@ func main() {
 					fmt.Fprintf(os.Stderr, "Path spec directory '%s' does not seem to exist. I'll try to create it.\n", path.Dir(paths[i].path))
 					err = os.MkdirAll(path.Dir(paths[i].path), 0755)
 					if err != nil {
-						fmt.Fprintf(os.Stderr, "main: Unable to create path spec directory '%s' (%s).\n", path.Dir(paths[i].path), err.Error())
+						log.Printf("main: Unable to create path spec directory '%s' (%s).\n", path.Dir(paths[i].path), err.Error())
+						returnError = err
 					} else {
 						verbosePrint(fmt.Sprintf("main: Successfully created '%s'.", path.Dir(paths[i].path)))
 					}
@@ -168,7 +169,8 @@ func main() {
 					fmt.Fprintf(os.Stderr, "Path spec directory '%s' is not readable. I'll try to fix it.\n", path.Dir(paths[i].path))
 					err = os.Chmod(path.Dir(paths[i].path), 0755)
 					if err != nil {
-						fmt.Fprintf(os.Stderr, "Unable to change permissions on directory '%s' (%s). You're on your own.\n", path.Dir(paths[i].path), err.Error())
+						log.Printf("Unable to change permissions on directory '%s' (%s). You're on your own.\n", path.Dir(paths[i].path), err.Error())
+						returnError = err
 					} else {
 						verbosePrint(fmt.Sprintf("main: Successfully set permissions on '%s'.", path.Dir(paths[i].path)))
 					}
@@ -178,14 +180,15 @@ func main() {
 
 				// Check (and attempt to correct) the dropbox LOG_PATH directory (we check the actual file below).
 				if !validPath.MatchString(paths[i].logPath) {
-					fmt.Fprintf(os.Stderr, "Error: Dropbox Log Path spec '%s' for dropbox ID %d is invalid. Correct this in order to log activity for this dropbox.\n", paths[i].logPath, paths[i].id)
+					log.Printf("Error: Dropbox Log Path spec '%s' for dropbox ID %d is invalid. Correct this in order to log activity for this dropbox.\n", paths[i].logPath, paths[i].id)
 					// Unlike paths[i].path, there is nothing else to do if the logPath is invalid.
 				} else {
 					if pathInfo, err := os.Stat(path.Dir(paths[i].logPath)); os.IsNotExist(err) {
-						fmt.Fprintf(os.Stderr, "Log directory '%s' does not seem to exist. I'll try to create it.\n", path.Dir(paths[i].logPath))
+						log.Printf("Log directory '%s' does not seem to exist. I'll try to create it.\n", path.Dir(paths[i].logPath))
 						err = os.MkdirAll(path.Dir(paths[i].logPath), 0755)
 						if err != nil {
-							fmt.Fprintf(os.Stderr, "main: Unable to create log path directory '%s' (%s).\n", path.Dir(paths[i].logPath), err.Error())
+							log.Printf("main: Unable to create log path directory '%s' (%s).\n", path.Dir(paths[i].logPath), err.Error())
+							returnError = err
 						} else {
 							verbosePrint(fmt.Sprintf("main: Successfully created '%s'.", paths[i].logPath))
 						}
@@ -193,23 +196,26 @@ func main() {
 						fmt.Fprintf(os.Stderr, "Log path directory '%s' is not readable. I'll try to fix it.\n", path.Dir(paths[i].logPath))
 						err = os.MkdirAll(path.Dir(paths[i].logPath), 0755)
 					} else if err != nil {
-						fmt.Fprintf(os.Stderr, "Unhandled error: err: %v\n", err)
+						fmt.Fprintf(os.Stderr, "Unhandled error: %v\n", err)
+						returnError = err
 					} else {
 						verbosePrint(fmt.Sprintf("main: log dir '%s': %v, mode: %o. OK.", path.Dir(paths[i].logPath), pathInfo.IsDir(), pathInfo.Mode()))
 						// The LOG_PATH is accessible, make sure the log FILE is accessible and writable.
 						if pathInfo, err = os.Stat(paths[i].logPath); os.IsPermission(err) {
 							fmt.Fprintf(os.Stderr, "Could not access log file '%s' (err: %s). I will try to correct this...\n", paths[i].logPath, err.Error())
 							if err = os.Chmod(path.Dir(paths[i].logPath), 0755); os.IsPermission(err) {
-								fmt.Fprintf(os.Stderr, "Could not update permission on '%s' (%v). Please correct this situation.\n", path.Dir(paths[i].logPath), err)
+								log.Printf("Could not update permission on '%s' (%v). Please correct this situation.\n", path.Dir(paths[i].logPath), err)
+								returnError = err
 							} else if err != nil {
-								fmt.Fprintf(os.Stderr, "Unhandled error when trying to correct permission on '%s': %v", path.Dir(paths[i].logPath), err.Error())
+								log.Printf("Unexpected error when trying to correct permission on '%s': %v", path.Dir(paths[i].logPath), err.Error())
 								returnError = err
 							}
 						} else {
 							// We have permission to stat the file, but do we have permission to write to it?
 							verbosePrint(fmt.Sprintf("main: log file exists '%s': mode: %v.", paths[i].logPath, pathInfo.Mode()))
 							if logPath, err := os.OpenFile(paths[i].logPath, os.O_RDWR, 0); err != nil {
-								fmt.Fprintf(os.Stderr, "Error: Unable to open dropbox log file for dropbox ID %d (%v). Please correct this file's ownership and/or permissions.\n", paths[i].id, err)
+								log.Printf("Error: Unable to open dropbox log file for dropbox ID %d (%v). Please correct this file's ownership and/or permissions.\n", paths[i].id, err)
+								returnError = err
 							} else {
 								verbosePrint(fmt.Sprintf("log_path '%s' (dropbox ID %d) is writable.", paths[i].logPath, paths[i].id))
 								logPath.Close()
@@ -234,7 +240,8 @@ func main() {
 								}
 							}
 						} else {
-							fmt.Fprintf(os.Stderr, "Unable to read command line args for process '%s' (PID: %d)\n", pName, processList[p].Pid)
+							fmt.Fprintf(os.Stderr, "Unable to read command line args for process '%s' (PID: %d): %v\n", pName, processList[p].Pid, err)
+							returnError = err
 						}
 					}
 				}
@@ -255,7 +262,8 @@ func main() {
 						if paths[r].rdimportPID == restartPIDs[p] {
 							verbosePrint(fmt.Sprintf("killing proccess for dropbox path %s ID: %d ...", paths[r].path, paths[r].proc.Pid))
 							if err := paths[r].proc.Kill(); err != nil {
-								fmt.Fprintf(os.Stderr, "Error attempting to stop dropbox PID %d: %#v", paths[r].proc.Pid, err)
+								log.Printf("Error attempting to stop dropbox PID %d: %#v", paths[r].proc.Pid, err)
+								returnError = err
 							}
 						}
 					}
@@ -266,7 +274,8 @@ func main() {
 						if pName, _ := processList[p].Name(); pName == "rdcatchd" {
 							verbosePrint(fmt.Sprintf("killing %s process ID %d ...", pName, processList[p].Pid))
 							if err := processList[p].Kill(); err != nil {
-								fmt.Fprintf(os.Stderr, "Error attempting to stop dropbox manager service 'rdcatchd': %#v\n", err)
+								log.Printf("Error attempting to stop dropbox manager service 'rdcatchd': %#v\n", err)
+								returnError = err
 							}
 						}
 					}
@@ -283,21 +292,23 @@ func main() {
 							rdcatchdPIDfound = true
 							verbosePrint(fmt.Sprintf("%s was restarted: new process ID %d ...", pName, processList[p].Pid))
 						} else if err != nil {
-							fmt.Fprintf(os.Stderr, "Error retrieving info about rdcatchd process (%v)", err)
+							log.Printf("Error retrieving info about rdcatchd process (%v)", err)
+							returnError = err
 						}
 					}
 				}
 				if rdcatchdPIDfound {
 					verbosePrint("rdcatchd seems to have been restarted for us. Moving along now ...")
 				} else {
-					// Not found, so we need to restart it. First, make sure we can see the executable.
-					// Note that rdcatchd puts itself into the background. Grrrrr...
+					// Running process not found, so we need to restart it. First, make sure we
+					// can see the executable. Note that rdcatchd puts itself into the background. Grrrrr...
 					if rdcatchdPath, err := exec.LookPath("rdcatchd"); err != nil {
-						log.Fatal("Cannot find executable 'rdcatchd' in $PATH")
+						log.Fatalf("Cannot find executable 'rdcatchd' in $PATH (%v)\n", err)
 					} else {
 						command := exec.Command(rdcatchdPath)
 						if err := command.Run(); err != nil {
-							log.Fatalf("Oh No! Could not launch command '%s': %#v\n", rdcatchdPath, err)
+							log.Printf("Oh No! Could not launch command '%s': %#v\n", rdcatchdPath, err)
+							returnError = err
 						} else {
 							verbosePrint("successfully (re)started rdcatchd")
 						}
@@ -311,6 +322,9 @@ func main() {
 		errorMessage = fmt.Sprintf("Trouble getting the current list of running processes: %v\n", returnError)
 	}
 	if returnError != nil {
-		log.Fatal(errorMessage)
+		if errorMessage != "" {
+			// We have already logged the message if errorMessage is empty.
+			log.Fatal(errorMessage)
+		}
 	}
 }
