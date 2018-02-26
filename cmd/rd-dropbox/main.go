@@ -3,6 +3,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -120,11 +121,11 @@ func (p rowDropbox) getDropboxPaths() ([]rowDropbox, error) {
 
 func main() {
 	p := rowDropbox{}
-	var paths []rowDropbox
+	//var paths []rowDropbox
 	var returnError error
 	var errorMessage string
 	var restartPIDs []int32
-	var processList []*process.Process
+	//var processList []*process.Process
 	var validPath = regexp.MustCompile(`^(/+\w+)+`)
 
 	kingpin.CommandLine.HelpFlag.Short('h')
@@ -133,8 +134,8 @@ func main() {
 	kingpin.Parse()
 
 	// Use the process pkg to get a slice containing all the currently running processes.
-	if processList, returnError = process.Processes(); returnError == nil {
-		if paths, returnError = p.getDropboxPaths(); returnError == nil {
+	if processList, err := process.Processes(); err == nil {
+		if paths, err := p.getDropboxPaths(); err == nil {
 			verbosePrint(fmt.Sprintf("Found %d elements in paths.\n", len(paths)))
 			// Per https://stackoverflow.com/questions/28699485/remove-elements-in-slice
 			// (the **Alternative** section), loop downward through paths[] so we do not have to
@@ -144,14 +145,16 @@ func main() {
 			// elements.
 			for i := len(paths) - 1; i >= 0; i-- {
 				if !validPath.MatchString(paths[i].path) {
-					log.Printf("Error: Dropbox path spec '%s' (dropbox ID %d) is invalid. Correct this in order to have a properly working dropbox.\n", paths[i].path, paths[i].id)
+					returnError = errors.New("empty or invalid file path")
+					log.Printf("Error: Dropbox path spec '%s' (dropbox ID %d) is invalid (%v). Correct this in order to have a properly working dropbox.\n", paths[i].path, paths[i].id, returnError)
+					verbosePrint(fmt.Sprintf("main: removing dropbox ID %d ('%s') from paths.", paths[i].id, paths[i].path))
 					// Remove this item so we do not restart rdcatchd(8) for an invalid path spec.
 					if i == len(paths)-1 {
 						paths = append(paths[:i])
-						verbosePrint(fmt.Sprintf("first pass thru paths[]: %s", spew.Sdump(paths)))
+						verbosePrint(fmt.Sprintf("main: first pass thru paths[]: %s", spew.Sdump(paths)))
 					} else {
 						paths = append(paths[:i], paths[i+1:]...)
-						verbosePrint(fmt.Sprintf("subsequent pass thru paths[]: %s", spew.Sdump(paths)))
+						verbosePrint(fmt.Sprintf("main: subsequent pass thru paths[]: %s", spew.Sdump(paths)))
 					}
 					continue
 				}
@@ -175,7 +178,7 @@ func main() {
 						verbosePrint(fmt.Sprintf("main: Successfully set permissions on '%s'.", path.Dir(paths[i].path)))
 					}
 				} else {
-					verbosePrint(fmt.Sprintf("main: path spec dir '%s': %v, mode: %o OK", path.Dir(paths[i].path), pathInfo.IsDir(), pathInfo.Mode()))
+					verbosePrint(fmt.Sprintf("main: path spec dir '%s': %v, mode: %v.", path.Dir(paths[i].path), pathInfo.IsDir(), pathInfo.Mode()))
 				}
 
 				// Check (and attempt to correct) the dropbox LOG_PATH directory (we check the actual file below).
@@ -199,9 +202,12 @@ func main() {
 						log.Printf("Unexpected error on stat(2) of '%s': '%v'.\n", path.Dir(paths[i].logPath), err)
 						returnError = err
 					} else {
-						verbosePrint(fmt.Sprintf("main: log dir '%s', mode: %v. OK.", path.Dir(paths[i].logPath), pathInfo.Mode()))
+						verbosePrint(fmt.Sprintf("main: log dir '%s', mode: %v.", path.Dir(paths[i].logPath), pathInfo.Mode()))
 						// The LOG_PATH is accessible, make sure the log FILE is accessible and writable.
-						if pathInfo, err = os.Stat(paths[i].logPath); os.IsPermission(err) {
+						if pathInfo, err = os.Stat(paths[i].logPath); err != nil {
+							log.Printf("Could not access log file '%s' (%v). Is rdcatchd(8) running?\n", paths[i].logPath, err)
+							returnError = err
+						} else if os.IsPermission(err) {
 							log.Printf("Could not access log file '%s' (%v). I will try to correct this...\n", paths[i].logPath, err)
 							if err = os.Chmod(path.Dir(paths[i].logPath), 0755); os.IsPermission(err) {
 								log.Printf("Could not update permission on directory '%s' (%v). Please correct this situation.\n", path.Dir(paths[i].logPath), err)
@@ -210,7 +216,7 @@ func main() {
 								log.Printf("Unexpected error when trying to correct permission on '%s' (%v).", path.Dir(paths[i].logPath), err)
 								returnError = err
 							}
-						} else {
+						} else { // TODO: probably other errors to check for here.
 							// We have permission to stat the file, but do we have permission to write to it?
 							verbosePrint(fmt.Sprintf("main: log file exists '%s': mode: %v.", paths[i].logPath, pathInfo.Mode()))
 							if logPath, err := os.OpenFile(paths[i].logPath, os.O_RDWR, 0); err != nil {
@@ -255,6 +261,7 @@ func main() {
 			if len(restartPIDs) == len(paths) {
 				fmt.Println("Yay! All available Rivendell dropboxes are running. Note any 'invalid' path specs or log path specs.")
 			} else {
+				verbosePrint(fmt.Sprintf("main: restartPIDs: %v, paths: %v", restartPIDs, paths))
 				log.Printf("Missing one or more rdimport processes, attempting to stop all remaining process ...\n")
 				// Kill the remaining instances of rdimport
 				for p := range restartPIDs {
@@ -316,10 +323,12 @@ func main() {
 				}
 			}
 		} else {
-			errorMessage = fmt.Sprintf("Error getting dropbox paths from the database (%v).\n", returnError)
+			errorMessage = fmt.Sprintf("Error getting dropbox paths from the database (%v).\n", err)
+			returnError = err
 		}
 	} else {
-		errorMessage = fmt.Sprintf("Trouble getting the current list of running processes (%v).\n", returnError)
+		errorMessage = fmt.Sprintf("Trouble getting the current list of running processes (%v).\n", err)
+		returnError = err
 	}
 	if returnError != nil {
 		if errorMessage != "" {
