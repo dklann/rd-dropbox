@@ -67,7 +67,7 @@ func (p rowDropbox) getDropboxPaths() ([]rowDropbox, error) {
 	// further on down the line in the method (it's a scope thing...).
 	stationName, err := os.Hostname()
 	if err == nil {
-		verbosePrint(fmt.Sprintf("Our station name: %s", stationName))
+		verbosePrint(fmt.Sprintf("getDropboxPaths: Our station name: %s", stationName))
 		db, err := sql.Open("mysql", *dbuser+":"+*dbpass+"@tcp("+*dbhost+")/"+*dbname)
 		if err == nil {
 			defer db.Close()
@@ -75,13 +75,13 @@ func (p rowDropbox) getDropboxPaths() ([]rowDropbox, error) {
 			// From https://github.com/golang/go/wiki/SQLInterface
 			// "Note that Open does not directly open a database connection"
 			if err = db.Ping(); err == nil {
-				verbosePrint("pinged the database")
+				verbosePrint("getDropboxPaths: pinged the database")
 
 				// How many paths are we looking at here?
 				row := db.QueryRow("SELECT count(*) FROM DROPBOXES WHERE station_name = '" + stationName + "'")
 				err = row.Scan(&rowCount)
 				if err == nil {
-					verbosePrint(fmt.Sprintf("Found %d dropboxes", rowCount))
+					verbosePrint(fmt.Sprintf("getDropboxPaths: found %d dropboxes", rowCount))
 
 					rows, err := db.Query("SELECT id,path,log_path FROM DROPBOXES WHERE station_name = '" + stationName + "'")
 					if err == nil {
@@ -92,7 +92,7 @@ func (p rowDropbox) getDropboxPaths() ([]rowDropbox, error) {
 							}
 							paths = append(paths, thisRow)
 						}
-						verbosePrint(fmt.Sprintf("Before returning: paths: %s", spew.Sdump(paths)))
+						verbosePrint(fmt.Sprintf("getDropboxPaths: before returning: paths: %s", spew.Sdump(paths)))
 					} else {
 						errorMessage = fmt.Sprintf("Error encountered querying the database (%v).\n", err)
 						returnError = err
@@ -119,6 +119,21 @@ func (p rowDropbox) getDropboxPaths() ([]rowDropbox, error) {
 	return paths, returnError
 }
 
+func removePathSpec(i int, paths []rowDropbox) (newpaths []rowDropbox) {
+	verbosePrint(fmt.Sprintf("removePathSpec: removing dropbox ID %d ('%s') from paths.", paths[i].id, paths[i].path))
+	// Remove this item so we do not restart rdcatchd(8) for an invalid path spec.
+	if i == len(paths)-1 {
+		newpaths = append(paths[:i])
+		verbosePrint(fmt.Sprintf("removePathSpec: first pass thru paths[]: %s", spew.Sdump(paths)))
+	} else {
+		newpaths = append(paths[:i], paths[i+1:]...)
+		verbosePrint(fmt.Sprintf("removePathSpec: subsequent pass thru paths[]: %s", spew.Sdump(paths)))
+	}
+	verbosePrint(fmt.Sprintf("removePathSpec: newpaths before returning: %v\n\n", newpaths))
+
+	return newpaths
+}
+
 func main() {
 	p := rowDropbox{}
 	//var paths []rowDropbox
@@ -136,7 +151,7 @@ func main() {
 	// Use the process pkg to get a slice containing all the currently running processes.
 	if processList, err := process.Processes(); err == nil {
 		if paths, err := p.getDropboxPaths(); err == nil {
-			verbosePrint(fmt.Sprintf("Found %d elements in paths.\n", len(paths)))
+			verbosePrint(fmt.Sprintf("main: found %d elements in paths.\n", len(paths)))
 			// Per https://stackoverflow.com/questions/28699485/remove-elements-in-slice
 			// (the **Alternative** section), loop downward through paths[] so we do not have to
 			// modify `i` when we remove an element from paths[]. The first pass through the loop
@@ -144,77 +159,99 @@ func main() {
 			// we need to copy the first elements, leave off this one, and then copy all the remaining
 			// elements.
 			for i := len(paths) - 1; i >= 0; i-- {
+				verbosePrint(fmt.Sprintf("main: looking at dropbox ID %d - %+v'.", paths[i].id, paths[i]))
 				if !validPath.MatchString(paths[i].path) {
 					returnError = errors.New("empty or invalid file path")
 					log.Printf("Error: Dropbox path spec '%s' (dropbox ID %d) is invalid (%v). Correct this in order to have a properly working dropbox.\n", paths[i].path, paths[i].id, returnError)
-					verbosePrint(fmt.Sprintf("main: removing dropbox ID %d ('%s') from paths.", paths[i].id, paths[i].path))
-					// Remove this item so we do not restart rdcatchd(8) for an invalid path spec.
-					if i == len(paths)-1 {
-						paths = append(paths[:i])
-						verbosePrint(fmt.Sprintf("main: first pass thru paths[]: %s", spew.Sdump(paths)))
-					} else {
-						paths = append(paths[:i], paths[i+1:]...)
-						verbosePrint(fmt.Sprintf("main: subsequent pass thru paths[]: %s", spew.Sdump(paths)))
-					}
-					continue
-				}
-				// Check (and attempt to correct) the dropbox path spec.
-				if pathInfo, err := os.Stat(path.Dir(paths[i].path)); os.IsNotExist(err) {
-					log.Printf("Path spec directory '%s' does not seem to exist. I'll try to create it.\n", path.Dir(paths[i].path))
-					err = os.MkdirAll(path.Dir(paths[i].path), 0755)
-					if err != nil {
-						log.Printf("main: Unable to create path spec directory '%s' (%s).\n", path.Dir(paths[i].path), err.Error())
-						returnError = err
-					} else {
-						verbosePrint(fmt.Sprintf("main: Successfully created '%s'.", path.Dir(paths[i].path)))
-					}
-				} else if os.IsPermission(err) {
-					log.Printf("Path spec directory '%s' is not readable. I'll try to fix it.\n", path.Dir(paths[i].path))
-					err = os.Chmod(path.Dir(paths[i].path), 0755)
-					if err != nil {
-						log.Printf("Unable to change permissions on directory '%s' (%s). You're on your own.\n", path.Dir(paths[i].path), err.Error())
-						returnError = err
-					} else {
-						verbosePrint(fmt.Sprintf("main: Successfully set permissions on '%s'.", path.Dir(paths[i].path)))
-					}
 				} else {
-					verbosePrint(fmt.Sprintf("main: path spec dir '%s': %v, mode: %v.", path.Dir(paths[i].path), pathInfo.IsDir(), pathInfo.Mode()))
+					// Check (and attempt to correct) the dropbox path spec.
+					// NB: path.Dir() returns "." for the path if it is empty.
+					if pathInfo, err := os.Stat(path.Dir(paths[i].path)); os.IsNotExist(err) {
+						log.Printf("Path spec directory '%s' does not seem to exist. I'll try to create it.\n", path.Dir(paths[i].path))
+						err = os.MkdirAll(path.Dir(paths[i].path), 0755)
+						if err != nil {
+							log.Printf("main: Unable to create path spec directory '%s' (%s).\n", path.Dir(paths[i].path), err.Error())
+							returnError = err
+						} else {
+							verbosePrint(fmt.Sprintf("main: Successfully created '%s'.", path.Dir(paths[i].path)))
+						}
+					} else if os.IsPermission(err) {
+						log.Printf("Path spec directory '%s' is not readable. I'll try to fix it.\n", path.Dir(paths[i].path))
+						err = os.Chmod(path.Dir(paths[i].path), 0755)
+						if err != nil {
+							log.Printf("Unable to change permissions on directory '%s' (%s). You're on your own.\n", path.Dir(paths[i].path), err.Error())
+							returnError = err
+						} else {
+							verbosePrint(fmt.Sprintf("main: Successfully set permissions on '%s'.", path.Dir(paths[i].path)))
+						}
+					} else {
+						verbosePrint(fmt.Sprintf("main: path spec dir '%s', mode: %v.", path.Dir(paths[i].path), pathInfo.Mode()))
+						// Attempt to open/create a new file in the directory.
+						// But just because *we* cannot write to it does not mean the dropbox process is not running!?
+						// All the dropbox process needs to do is read files in that directory.
+						if !(path.Dir(paths[i].path) == ".") {
+							if testFile, err := os.OpenFile(path.Dir(paths[i].path)+"/test-file", os.O_RDWR|os.O_CREATE, 0); err != nil {
+								log.Printf("Warning: Unable to create a new file in '%s' for dropbox ID %d (%v). Please correct this directory's ownership and/or permissions.\n", path.Dir(paths[i].path), paths[i].id, err)
+								// This is NOT an error, just a warning.
+							} else {
+								verbosePrint(fmt.Sprintf("main: path '%s' (dropbox ID %d) is writable.", path.Dir(paths[i].path), paths[i].id))
+								testFile.Close()
+								os.Remove(path.Dir(paths[i].path) + "/test-file")
+							}
+						} else {
+							verbosePrint("main: path spec should not be blank. How did we get here?")
+						}
+					}
 				}
 
 				// Check (and attempt to correct) the dropbox LOG_PATH directory (we check the actual file below).
 				if !validPath.MatchString(paths[i].logPath) {
-					log.Printf("Error: Dropbox Log Path spec '%s' for dropbox ID %d is invalid. Correct this in order to log activity for this dropbox.\n", paths[i].logPath, paths[i].id)
-					// Unlike paths[i].path, there is nothing else to do if the logPath is invalid.
+					returnError = errors.New("empty or invalid file path")
+					log.Printf("Error: Dropbox Log Path spec '%s' for dropbox ID %d is invalid (%v). Correct this in order to log activity for this dropbox.\n", paths[i].logPath, paths[i].id, returnError)
+					// Remove this entry in the paths slice because the dropbox is unlikely to be running.
+					paths = removePathSpec(i, paths)
 				} else {
 					if pathInfo, err := os.Stat(path.Dir(paths[i].logPath)); os.IsNotExist(err) {
 						log.Printf("Log directory '%s' does not seem to exist. I'll try to create it.\n", path.Dir(paths[i].logPath))
 						err = os.MkdirAll(path.Dir(paths[i].logPath), 0755)
 						if err != nil {
-							log.Printf("main: Unable to create log path directory '%s' (%s).\n", path.Dir(paths[i].logPath), err.Error())
+							log.Printf("Unable to create log path directory '%s' (%s).\n", path.Dir(paths[i].logPath), err.Error())
 							returnError = err
+							// Remove this entry in the paths slice because the dropbox is unlikely to be running.
+							paths = removePathSpec(i, paths)
 						} else {
-							verbosePrint(fmt.Sprintf("main: Successfully created '%s'.", paths[i].logPath))
+							verbosePrint(fmt.Sprintf("main: Successfully created '%s'.", path.Dir(paths[i].logPath)))
 						}
 					} else if os.IsPermission(err) {
-						log.Printf("Log path directory '%s' is not readable. I'll try to fix it.\n", path.Dir(paths[i].logPath))
-						err = os.MkdirAll(path.Dir(paths[i].logPath), 0755)
+						log.Printf("Log path directory '%s' is not readable (%v). You will need to fix it.\n", path.Dir(paths[i].logPath), err)
+						returnError = err
+						// Remove this entry from the slice because the dropbox is unlikely to be running.
+						paths = removePathSpec(i, paths)
 					} else if err != nil {
 						log.Printf("Unexpected error on stat(2) of '%s': '%v'.\n", path.Dir(paths[i].logPath), err)
 						returnError = err
+						// Remove this entry in the paths slice because the dropbox is unlikely to be running.
+						paths = removePathSpec(i, paths)
 					} else {
 						verbosePrint(fmt.Sprintf("main: log dir '%s', mode: %v.", path.Dir(paths[i].logPath), pathInfo.Mode()))
 						// The LOG_PATH is accessible, make sure the log FILE is accessible and writable.
 						if pathInfo, err = os.Stat(paths[i].logPath); err != nil {
-							log.Printf("Could not access log file '%s' (%v). Is rdcatchd(8) running?\n", paths[i].logPath, err)
+							log.Printf("Error: Could not access log file '%s' (%v). Is rdcatchd(8) running?\n", paths[i].logPath, err)
 							returnError = err
+							// Remove this entry from the slice because the dropbox is unlikely to be running.
+							paths = removePathSpec(i, paths)
 						} else if os.IsPermission(err) {
-							log.Printf("Could not access log file '%s' (%v). I will try to correct this...\n", paths[i].logPath, err)
+							log.Printf("Warning: Could not access log file '%s' (%v). I will try to correct this...\n", paths[i].logPath, err)
 							if err = os.Chmod(path.Dir(paths[i].logPath), 0755); os.IsPermission(err) {
 								log.Printf("Could not update permission on directory '%s' (%v). Please correct this situation.\n", path.Dir(paths[i].logPath), err)
 								returnError = err
+								// Remove this entry from the slice because the dropbox is unlikely to be running.
+								paths = removePathSpec(i, paths)
 							} else if err != nil {
 								log.Printf("Unexpected error when trying to correct permission on '%s' (%v).", path.Dir(paths[i].logPath), err)
 								returnError = err
+								// Remove this entry from the slice because the dropbox is unlikely to be running.
+								paths = removePathSpec(i, paths)
 							}
 						} else { // TODO: probably other errors to check for here.
 							// We have permission to stat the file, but do we have permission to write to it?
@@ -222,14 +259,18 @@ func main() {
 							if logPath, err := os.OpenFile(paths[i].logPath, os.O_RDWR, 0); err != nil {
 								log.Printf("Error: Unable to open dropbox log file for dropbox ID %d (%v). Please correct this file's ownership and/or permissions.\n", paths[i].id, err)
 								returnError = err
+								// Remove this entry from the slice because the dropbox is unlikely to be running.
+								paths = removePathSpec(i, paths)
 							} else {
-								verbosePrint(fmt.Sprintf("log_path '%s' (dropbox ID %d) is writable.", paths[i].logPath, paths[i].id))
+								verbosePrint(fmt.Sprintf("main: log_path '%s' (dropbox ID %d) is writable.", paths[i].logPath, paths[i].id))
 								logPath.Close()
 							}
 						}
 					}
 				}
+			}
 
+			for i := range paths {
 				// Use the process list we obtained up top to get a slice containing all the currently running processes.
 				for p := range processList {
 					if pName, _ := processList[p].Name(); pName == "rdimport" {
@@ -267,7 +308,7 @@ func main() {
 				for p := range restartPIDs {
 					for r := range paths {
 						if paths[r].rdimportPID == restartPIDs[p] {
-							verbosePrint(fmt.Sprintf("killing proccess for dropbox path %s ID: %d ...", paths[r].path, paths[r].proc.Pid))
+							verbosePrint(fmt.Sprintf("main: killing proccess for dropbox path %s ID: %d ...", paths[r].path, paths[r].proc.Pid))
 							if err := paths[r].proc.Kill(); err != nil {
 								log.Printf("Error attempting to stop dropbox PID %d (%v).\n", paths[r].proc.Pid, err)
 								returnError = err
@@ -279,7 +320,7 @@ func main() {
 				if processList, err := process.Processes(); err == nil {
 					for p := range processList {
 						if pName, _ := processList[p].Name(); pName == "rdcatchd" {
-							verbosePrint(fmt.Sprintf("killing %s process ID %d ...", pName, processList[p].Pid))
+							verbosePrint(fmt.Sprintf("main: killing %s process ID %d ...", pName, processList[p].Pid))
 							if err := processList[p].Kill(); err != nil {
 								log.Printf("Error attempting to stop dropbox manager service 'rdcatchd' (%v)\n", err)
 								returnError = err
@@ -297,7 +338,7 @@ func main() {
 					for p := range processList {
 						if pName, err := processList[p].Name(); pName == "rdcatchd" {
 							rdcatchdPIDfound = true
-							verbosePrint(fmt.Sprintf("%s was restarted: new process ID %d ...", pName, processList[p].Pid))
+							verbosePrint(fmt.Sprintf("main: %s was restarted: new process ID %d ...", pName, processList[p].Pid))
 						} else if err != nil {
 							log.Printf("Error retrieving info about rdcatchd process (%v).\n", err)
 							returnError = err
@@ -305,7 +346,7 @@ func main() {
 					}
 				}
 				if rdcatchdPIDfound {
-					verbosePrint("rdcatchd seems to have been restarted for us. Moving along now ...")
+					verbosePrint("main: rdcatchd seems to have been restarted for us. Moving along now ...")
 				} else {
 					// Running process not found, so we need to restart it. First, make sure we
 					// can see the executable. Note that rdcatchd puts itself into the background. Grrrrr...
@@ -317,7 +358,7 @@ func main() {
 							log.Printf("Oh No! Could not launch command '%s' (%v).\n", rdcatchdPath, err)
 							returnError = err
 						} else {
-							verbosePrint("successfully (re)started rdcatchd")
+							verbosePrint("main: successfully (re)started rdcatchd")
 						}
 					}
 				}
