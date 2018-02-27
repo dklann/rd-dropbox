@@ -46,11 +46,21 @@ var (
 	dbpass  = kingpin.Flag("dbpass", "The password for the database user").Short('p').Default("letmein").String()
 	dbname  = kingpin.Flag("dbname", "The name of the database.").Short('n').Default("Rivendell").String()
 	verbose = kingpin.Flag("verbose", "Be chatty when running").Short('v').Bool()
+	debug   = kingpin.Flag("debug", "Be very verbose about what is going on.").Short('D').Bool()
 )
 
+// Add a bit of "template" around verbose print statements.
 func verbosePrint(message string) {
 	if *verbose {
 		fmt.Println("\t" + message)
+	}
+	return
+}
+
+// Add a bit of "template" around verbose print statements.
+func debugPrint(message string) {
+	if *verbose {
+		fmt.Println("\t[d]: " + message)
 	}
 	return
 }
@@ -92,7 +102,7 @@ func (p rowDropbox) getDropboxPaths() ([]rowDropbox, error) {
 							}
 							paths = append(paths, thisRow)
 						}
-						verbosePrint(fmt.Sprintf("getDropboxPaths: before returning: paths: %s", spew.Sdump(paths)))
+						debugPrint(fmt.Sprintf("getDropboxPaths: before returning: paths: %s", spew.Sdump(paths)))
 					} else {
 						errorMessage = fmt.Sprintf("Error encountered querying the database (%v).\n", err)
 						returnError = err
@@ -119,17 +129,23 @@ func (p rowDropbox) getDropboxPaths() ([]rowDropbox, error) {
 	return paths, returnError
 }
 
+// Per https://stackoverflow.com/questions/28699485/remove-elements-in-slice
+// (the **Alternative** section), loop downward through paths[] so we do not have to
+// modify `i` when we remove an element from paths[]. The first pass through the loop
+// we simply copy paths[] to itself, leaving off the last element. On subsequent passes,
+// we need to copy the first elements, leave off this one, and then copy all the remaining
+// elements.
 func removePathSpec(i int, paths []rowDropbox) (newpaths []rowDropbox) {
 	verbosePrint(fmt.Sprintf("removePathSpec: removing dropbox ID %d ('%s') from paths.", paths[i].id, paths[i].path))
 	// Remove this item so we do not restart rdcatchd(8) for an invalid path spec.
 	if i == len(paths)-1 {
 		newpaths = append(paths[:i])
-		verbosePrint(fmt.Sprintf("removePathSpec: first pass thru paths[]: %s", spew.Sdump(paths)))
+		debugPrint(fmt.Sprintf("removePathSpec: first pass thru paths[]: %s", spew.Sdump(paths)))
 	} else {
 		newpaths = append(paths[:i], paths[i+1:]...)
-		verbosePrint(fmt.Sprintf("removePathSpec: subsequent pass thru paths[]: %s", spew.Sdump(paths)))
+		debugPrint(fmt.Sprintf("removePathSpec: subsequent pass thru paths[]: %s", spew.Sdump(paths)))
 	}
-	verbosePrint(fmt.Sprintf("removePathSpec: newpaths before returning: %v\n\n", newpaths))
+	debugPrint(fmt.Sprintf("removePathSpec: newpaths before returning: %v\n\n", newpaths))
 
 	return newpaths
 }
@@ -151,13 +167,7 @@ func main() {
 	// Use the process pkg to get a slice containing all the currently running processes.
 	if processList, err := process.Processes(); err == nil {
 		if paths, err := p.getDropboxPaths(); err == nil {
-			verbosePrint(fmt.Sprintf("main: found %d elements in paths.\n", len(paths)))
-			// Per https://stackoverflow.com/questions/28699485/remove-elements-in-slice
-			// (the **Alternative** section), loop downward through paths[] so we do not have to
-			// modify `i` when we remove an element from paths[]. The first pass through the loop
-			// we simply copy paths[] to itself, leaving off the last element. On subsequent passes,
-			// we need to copy the first elements, leave off this one, and then copy all the remaining
-			// elements.
+			debugPrint(fmt.Sprintf("main: found %d elements in paths.\n", len(paths)))
 			for i := len(paths) - 1; i >= 0; i-- {
 				verbosePrint(fmt.Sprintf("main: looking at dropbox ID %d - %+v'.", paths[i].id, paths[i]))
 				if !validPath.MatchString(paths[i].path) {
@@ -199,7 +209,7 @@ func main() {
 								os.Remove(path.Dir(paths[i].path) + "/test-file")
 							}
 						} else {
-							verbosePrint("main: path spec should not be blank. How did we get here?")
+							debugPrint("main: path spec should not be blank. How did we get here?")
 						}
 					}
 				}
@@ -233,7 +243,7 @@ func main() {
 						// Remove this entry in the paths slice because the dropbox is unlikely to be running.
 						paths = removePathSpec(i, paths)
 					} else {
-						verbosePrint(fmt.Sprintf("main: log dir '%s', mode: %v.", path.Dir(paths[i].logPath), pathInfo.Mode()))
+						debugPrint(fmt.Sprintf("main: log dir '%s', mode: %v.", path.Dir(paths[i].logPath), pathInfo.Mode()))
 						// The LOG_PATH is accessible, make sure the log FILE is accessible and writable.
 						if pathInfo, err = os.Stat(paths[i].logPath); err != nil {
 							log.Printf("Error: Could not access log file '%s' (%v). Is rdcatchd(8) running?\n", paths[i].logPath, err)
@@ -255,7 +265,7 @@ func main() {
 							}
 						} else { // TODO: probably other errors to check for here.
 							// We have permission to stat the file, but do we have permission to write to it?
-							verbosePrint(fmt.Sprintf("main: log file exists '%s': mode: %v.", paths[i].logPath, pathInfo.Mode()))
+							debugPrint(fmt.Sprintf("main: log file exists '%s': mode: %v.", paths[i].logPath, pathInfo.Mode()))
 							if logPath, err := os.OpenFile(paths[i].logPath, os.O_RDWR, 0); err != nil {
 								log.Printf("Error: Unable to open dropbox log file for dropbox ID %d (%v). Please correct this file's ownership and/or permissions.\n", paths[i].id, err)
 								returnError = err
@@ -302,13 +312,13 @@ func main() {
 			if len(restartPIDs) == len(paths) {
 				fmt.Println("Yay! All available Rivendell dropboxes are running. Note any 'invalid' path specs or log path specs.")
 			} else {
-				verbosePrint(fmt.Sprintf("main: restartPIDs: %v, paths: %v", restartPIDs, paths))
+				debugPrint(fmt.Sprintf("main: restartPIDs: %v, paths: %v", restartPIDs, paths))
 				log.Printf("Missing one or more rdimport processes, attempting to stop all remaining process ...\n")
 				// Kill the remaining instances of rdimport
 				for p := range restartPIDs {
 					for r := range paths {
 						if paths[r].rdimportPID == restartPIDs[p] {
-							verbosePrint(fmt.Sprintf("main: killing proccess for dropbox path %s ID: %d ...", paths[r].path, paths[r].proc.Pid))
+							verbosePrint(fmt.Sprintf("main: killing dropbox proccess for dropbox path '%s' ID: %d ...", paths[r].path, paths[r].proc.Pid))
 							if err := paths[r].proc.Kill(); err != nil {
 								log.Printf("Error attempting to stop dropbox PID %d (%v).\n", paths[r].proc.Pid, err)
 								returnError = err
@@ -320,7 +330,7 @@ func main() {
 				if processList, err := process.Processes(); err == nil {
 					for p := range processList {
 						if pName, _ := processList[p].Name(); pName == "rdcatchd" {
-							verbosePrint(fmt.Sprintf("main: killing %s process ID %d ...", pName, processList[p].Pid))
+							verbosePrint(fmt.Sprintf("main: killing '%s' process ID %d ...", pName, processList[p].Pid))
 							if err := processList[p].Kill(); err != nil {
 								log.Printf("Error attempting to stop dropbox manager service 'rdcatchd' (%v)\n", err)
 								returnError = err
