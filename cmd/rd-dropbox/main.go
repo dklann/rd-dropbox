@@ -46,8 +46,10 @@ var (
 	dbpass  = kingpin.Flag("dbpass", "The password for the database user").Short('p').Default("letmein").String()
 	dbname  = kingpin.Flag("dbname", "The name of the database.").Short('n').Default("Rivendell").String()
 	verbose = kingpin.Flag("verbose", "Be chatty when running").Short('v').Bool()
-	debug   = kingpin.Flag("debug", "Be very verbose about what is going on.").Short('D').Bool()
+	debug   = kingpin.Flag("debug", "Be very verbose about what is going on (implies -v).").Short('D').Bool()
 )
+
+const appVersion = "0.0.3"
 
 // Add a bit of "template" around verbose print statements.
 func verbosePrint(message string) {
@@ -59,7 +61,7 @@ func verbosePrint(message string) {
 
 // Add a bit of "template" around verbose print statements.
 func debugPrint(message string) {
-	if *verbose {
+	if *debug {
 		fmt.Println("\t[d]: " + message)
 	}
 	return
@@ -160,16 +162,19 @@ func main() {
 	var validPath = regexp.MustCompile(`^(/+\w+)+`)
 
 	kingpin.CommandLine.HelpFlag.Short('h')
-	kingpin.UsageTemplate(kingpin.CompactUsageTemplate).Version("0.0.2").Author("Broadcast Tool & Die, David Klann")
+	kingpin.UsageTemplate(kingpin.CompactUsageTemplate).Version(appVersion).Author("Broadcast Tool & Die, David Klann")
 	kingpin.CommandLine.Help = "Check and, if necessary restart Rivendell dropbox tasks."
 	kingpin.Parse()
+	if *debug {
+		*verbose = true
+	}
 
 	// Use the process pkg to get a slice containing all the currently running processes.
 	if processList, err := process.Processes(); err == nil {
 		if paths, err := p.getDropboxPaths(); err == nil {
 			debugPrint(fmt.Sprintf("main: found %d elements in paths.\n", len(paths)))
 			for i := len(paths) - 1; i >= 0; i-- {
-				verbosePrint(fmt.Sprintf("main: looking at dropbox ID %d - %+v'.", paths[i].id, paths[i]))
+				debugPrint(fmt.Sprintf("main: looking at dropbox ID %d - %+v'.", paths[i].id, paths[i]))
 				if !validPath.MatchString(paths[i].path) {
 					returnError = errors.New("empty or invalid file path")
 					log.Printf("Error: Dropbox path spec '%s' (dropbox ID %d) is invalid (%v). Correct this in order to have a properly working dropbox.\n", paths[i].path, paths[i].id, returnError)
@@ -200,7 +205,7 @@ func main() {
 						// But just because *we* cannot write to it does not mean the dropbox process is not running!?
 						// All the dropbox process needs to do is read files in that directory.
 						if !(path.Dir(paths[i].path) == ".") {
-							if testFile, err := os.OpenFile(path.Dir(paths[i].path)+"/test-file", os.O_RDWR|os.O_CREATE, 0); err != nil {
+							if testFile, err := os.OpenFile(path.Dir(paths[i].path)+"/test-file", os.O_RDWR|os.O_CREATE, 0644); err != nil {
 								log.Printf("Warning: Unable to create a new file in '%s' for dropbox ID %d (%v). Please correct this directory's ownership and/or permissions.\n", path.Dir(paths[i].path), paths[i].id, err)
 								// This is NOT an error, just a warning.
 							} else {
