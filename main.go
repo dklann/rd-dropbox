@@ -16,6 +16,8 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/shirou/gopsutil/process"
 	"gopkg.in/alecthomas/kingpin.v2"
+
+	"db"
 )
 
 type rowDropbox struct {
@@ -68,12 +70,9 @@ func debugPrint(message string) {
 }
 
 // Snarf all the rows in the DROPBOX table and return a slice of rowDropbox.
-func (p rowDropbox) getDropboxPaths() ([]rowDropbox, error) {
+func (p rowDropbox) getDropboxPaths() (paths []rowDropbox, errorMessage string, returnError error) {
 	var rowCount int
 	var thisRow rowDropbox
-	var paths []rowDropbox
-	var returnError error
-	var errorMessage string
 
 	// We are declaring these outside the conditionals so that we can use them
 	// further on down the line in the method (it's a scope thing...).
@@ -100,7 +99,8 @@ func (p rowDropbox) getDropboxPaths() ([]rowDropbox, error) {
 						for rows.Next() {
 							if err := rows.Scan(&thisRow.id, &thisRow.path, &thisRow.logPath); err != nil {
 								log.Printf("Error encountered retrieving row %d from the database (%v).\n", len(paths)+1, err)
-								return nil, err
+								errorMessage = fmt.Sprintf("Error encountered executing database query (%v).\n", err)
+								returnError = err
 							}
 							paths = append(paths, thisRow)
 						}
@@ -128,7 +128,7 @@ func (p rowDropbox) getDropboxPaths() ([]rowDropbox, error) {
 	if returnError != nil {
 		log.Print(errorMessage)
 	}
-	return paths, returnError
+	return paths, errorMessage, returnError
 }
 
 // Per https://stackoverflow.com/questions/28699485/remove-elements-in-slice
@@ -138,7 +138,7 @@ func (p rowDropbox) getDropboxPaths() ([]rowDropbox, error) {
 // we need to copy the first elements, leave off this one, and then copy all the remaining
 // elements.
 func removePathSpec(i int, paths []rowDropbox) (newpaths []rowDropbox) {
-	verbosePrint(fmt.Sprintf("removePathSpec: removing dropbox ID %d ('%s') from paths.", paths[i].id, paths[i].path))
+	verbosePrint(fmt.Sprintf("removePathSpec: removing dropbox ID %d ('%s') from the list of paths to consider for restarting dropboxes.", paths[i].id, paths[i].path))
 	// Remove this item so we do not restart rdcatchd(8) for an invalid path spec.
 	if i == len(paths)-1 {
 		newpaths = append(paths[:i])
@@ -154,7 +154,7 @@ func removePathSpec(i int, paths []rowDropbox) (newpaths []rowDropbox) {
 
 func main() {
 	p := rowDropbox{}
-	//var paths []rowDropbox
+	var paths []rowDropbox
 	var returnError error
 	var errorMessage string
 	var restartPIDs []int32
@@ -171,7 +171,7 @@ func main() {
 
 	// Use the process pkg to get a slice containing all the currently running processes.
 	if processList, err := process.Processes(); err == nil {
-		if paths, err := p.getDropboxPaths(); err == nil {
+		if paths, errorMessage, err = p.getDropboxPaths(); err == nil {
 			debugPrint(fmt.Sprintf("main: found %d elements in paths.\n", len(paths)))
 			for i := len(paths) - 1; i >= 0; i-- {
 				debugPrint(fmt.Sprintf("main: looking at dropbox ID %d - %+v'.", paths[i].id, paths[i]))
@@ -314,9 +314,7 @@ func main() {
 
 			// Completed checking the paths and running processes,
 			// now restart rdcatchd(8) only if we are missing any PIDs.
-			if len(restartPIDs) == len(paths) {
-				fmt.Println("Yay! All available Rivendell dropboxes are running. Note any 'invalid' path specs or log path specs.")
-			} else {
+			if len(restartPIDs) != len(paths) {
 				debugPrint(fmt.Sprintf("main: restartPIDs: %v, paths: %v", restartPIDs, paths))
 				log.Printf("Missing one or more rdimport processes, attempting to stop all remaining process ...\n")
 				// Kill the remaining instances of rdimport
