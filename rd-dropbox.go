@@ -1,4 +1,8 @@
 // rd-dropbox ; check Rivendell dropbox paths and permissions to make sure they are reasonable.
+// Copyright © 2018 David Klann. All rights reserved.
+// Licensed under the GNU GPL-3.0-or-later
+// See COPYING.md for details. See https://www.gnu.org/licenses/gpl.html
+// if COPYING.md was not distributed with this file.
 package main
 
 import (
