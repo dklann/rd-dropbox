@@ -231,7 +231,7 @@ func main() {
 		for p := range restartPIDs {
 			for r := range paths {
 				if paths[r].rdimportPID == restartPIDs[p] {
-					verbosePrint(fmt.Sprintf("main: killing dropbox proccess for dropbox path '%s' ID: %d ...", paths[r].path, paths[r].proc.Pid))
+					verbosePrint(fmt.Sprintf("main: killing dropbox process for dropbox path '%s' ID: %d ...", paths[r].path, paths[r].proc.Pid))
 					if err := paths[r].proc.Kill(); err != nil {
 						log.Printf("Error attempting to stop dropbox PID %d (%v).\n", paths[r].proc.Pid, err)
 						errorCount++
