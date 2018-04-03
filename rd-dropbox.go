@@ -20,8 +20,6 @@ import (
 	"gopkg.in/alecthomas/kingpin.v2"
 )
 
-var d DropBoxer
-
 var (
 	myconfig = kingpin.Flag("myconfig", "The full path to a .my.cnf configuration file").Short('m').Default(os.Getenv("HOME") + "/.my.cnf").String()
 	dbhost   = kingpin.Flag("dbhost", "The name or IP address of the database host").Short('d').String()
@@ -39,7 +37,6 @@ func verbosePrint(message string) {
 	if *verbose {
 		fmt.Println("\t" + message)
 	}
-	return
 }
 
 // Add a bit of "template" around verbose print statements.
@@ -47,7 +44,6 @@ func debugPrint(message string) {
 	if *debug {
 		fmt.Println("\t[D]: " + message)
 	}
-	return
 }
 
 func main() {
