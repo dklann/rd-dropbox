@@ -6,7 +6,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -30,7 +29,114 @@ var (
 	debug    = kingpin.Flag("debug", "Be very verbose about what is going on (implies -v).").Short('D').Bool()
 )
 
-const appVersion = "0.1.0"
+const appVersion = "0.1.2"
+
+// Check the file path, p in dropbox ID id for sanity
+func filePathOK(p string, id int) bool {
+	var validPath = regexp.MustCompile(`^(/+\w+)+`)
+
+	if !validPath.MatchString(p) {
+		log.Printf("Error: path '%s' (dropbox ID %d) is an invalid filesystem path.\n", p, id)
+		return false
+	}
+
+	// Check (and attempt to correct) the path spec.
+	// NB: path.Dir() returns "." for the path if it is empty.
+	if pathInfo, err := os.Stat(p); os.IsNotExist(err) {
+		log.Printf("Directory '%s' does not seem to exist. I'll try to create it.\n", p)
+		if err := os.MkdirAll(p, 0755); err != nil {
+			log.Printf("filePathOK: Unable to create path spec directory '%s' (%s).\n", p, err.Error())
+			return false
+		}
+		verbosePrint(fmt.Sprintf("filePathOK: Successfully created '%s'.", p))
+	} else if os.IsPermission(err) {
+		log.Printf("Path spec directory '%s' is not readable. I'll try to fix it.\n", p)
+		err = os.Chmod(p, 0755)
+		if err != nil {
+			log.Printf("Unable to change permissions on directory '%s' (%v). You're on your own.\n", p, err)
+		}
+		verbosePrint(fmt.Sprintf("filePathOK: Successfully set permissions on '%s'.", p))
+	} else {
+		verbosePrint(fmt.Sprintf("filePathOK: path spec dir '%s', mode: %v.", p, pathInfo.Mode()))
+		// Attempt to open/create a new file in the directory.
+		// But just because *we* cannot _write_ to it does not mean the dropbox process is not running!?
+		// All the dropbox process needs to do is read files in that directory.
+		if !(p == ".") {
+			if testFile, err := os.OpenFile(p+"/test-file", os.O_RDWR|os.O_CREATE, 0644); err != nil {
+				log.Printf("Warning: Unable to create a new file in '%s' for dropbox ID %d (%v). Please correct this directory's ownership and/or permissions.\n", p, id, err)
+				return false
+				// This is just a warning, NOT an error.
+			} else {
+				verbosePrint(fmt.Sprintf("filePathOK: path '%s' (dropbox ID %d) is writable.", p, id))
+				testFile.Close()
+				os.Remove(p + "/test-file")
+			}
+		} else {
+			debugPrint("filePathOK: path spec should not be blank. How did we get here?")
+			return false
+		}
+	}
+
+	return true
+}
+
+// Check the "file" pattern in PATH for a sane value.
+func filePatternOK(base string, id int) bool {
+	var validPattern = regexp.MustCompile(`^([\*\?]|\w+)\.(flac|mp[23]|ogg|wav)$`)
+
+	// Pattern must either be a valid Rivendell dropbox pattern.
+	if !validPattern.MatchString(base) {
+		log.Printf("filePatternOK: Error: pattern '%s' (dropbox ID %d) is an invalid Rivendell dropbox pattern.\n", base, id)
+		return false
+	}
+
+	return true
+}
+
+// Check the "basename" pattern in PATH for a valid filename pattern
+func fileBasenameOK(base string, id int) bool {
+	var validBase = regexp.MustCompile(`^[\w\.]+$`)
+
+	// Basename must be must be a valid file basename.
+	if !validBase.MatchString(base) {
+		log.Printf("fileBasenameOK: Error: basename '%s' (dropbox ID %d) is an invalid filename.\n", base, id)
+		return false
+	}
+
+	return true
+}
+
+func fileOK(f string, id int) bool {
+	var pathInfo os.FileInfo
+	var err error
+
+	verbosePrint(fmt.Sprintf("fileOK: checking file '%s' (dropbox ID '%d')\n", f, id))
+
+	if pathInfo, err = os.Stat(f); err != nil {
+		log.Printf("fileOK: Error: Could not access file '%s' (%v).\n", f, err)
+		return false
+	}
+	if os.IsPermission(err) { // TODO: probably other errors to check for here.
+		log.Printf("fileOK: Warning: Could not access file '%s' (%v). I will try to correct this...\n", f, err)
+		if err = os.Chmod(path.Dir(f), 0755); os.IsPermission(err) {
+			log.Printf("fileOK: Error: Could not update permission on directory '%s' (%v). Please correct this situation.\n", path.Dir(f), err)
+			return false
+		} else if err != nil {
+			log.Printf("fileOK: Error: Unexpected error when trying to correct permission on '%s' (%v).", path.Dir(f), err)
+			return false
+		}
+	}
+	// We have permission to stat the file, but do we have permission to write to it?
+	debugPrint(fmt.Sprintf("fileOK: log file exists '%s': mode: %v.", f, pathInfo.Mode()))
+	if logPath, err := os.OpenFile(f, os.O_RDWR, 0); err != nil {
+		log.Printf("FileOK: Error: Unable to open file for dropbox ID %d (%v). Please correct this file's ownership and/or permissions.\n", id, err)
+	} else {
+		verbosePrint(fmt.Sprintf("fileOK: path '%s' (dropbox ID %d) is writable.", f, id))
+		logPath.Close()
+	}
+
+	return true
+}
 
 // Add a bit of "template" around verbose print statements.
 func verbosePrint(message string) {
@@ -73,115 +179,31 @@ func main() {
 	// we simply copy paths[] to itself, leaving off the last element. On subsequent passes,
 	// we need to copy the first elements, leave off this one, and then copy all the remaining
 	// elements.
-	for i := len(paths) - 1; i >= 0; i-- {
-		var validPath = regexp.MustCompile(`^(/+\w+)+`)
+	for i := len(paths) - 1; i > -1; i-- {
 		debugPrint(fmt.Sprintf("main: looking at dropbox ID %d - %+v'.", paths[i].id, paths[i]))
-		if !validPath.MatchString(paths[i].path) {
-			returnError = errors.New("empty or invalid file path")
-			log.Printf("Error: Dropbox path spec '%s' (dropbox ID %d) is invalid (%v). Correct this in order to have a properly working dropbox.\n", paths[i].path, paths[i].id, returnError)
+
+		// Check (and attempt to correct) the dropbox PATH directory.
+		if !filePathOK(path.Dir(paths[i].path), paths[i].id) {
 			errorCount++
-		}
-		// Check (and attempt to correct) the dropbox path spec.
-		// NB: path.Dir() returns "." for the path if it is empty.
-		if pathInfo, err := os.Stat(path.Dir(paths[i].path)); os.IsNotExist(err) {
-			log.Printf("Path spec directory '%s' does not seem to exist. I'll try to create it.\n", path.Dir(paths[i].path))
-			err = os.MkdirAll(path.Dir(paths[i].path), 0755)
-			if err != nil {
-				log.Fatalf("main: Unable to create path spec directory '%s' (%s).\n", path.Dir(paths[i].path), err.Error())
-			}
-			verbosePrint(fmt.Sprintf("main: Successfully created '%s'.", path.Dir(paths[i].path)))
-		} else if os.IsPermission(err) {
-			log.Printf("Path spec directory '%s' is not readable. I'll try to fix it.\n", path.Dir(paths[i].path))
-			err = os.Chmod(path.Dir(paths[i].path), 0755)
-			if err != nil {
-				log.Printf("Unable to change permissions on directory '%s' (%v). You're on your own.\n", path.Dir(paths[i].path), err)
-				errorCount++
-			}
-			verbosePrint(fmt.Sprintf("main: Successfully set permissions on '%s'.", path.Dir(paths[i].path)))
-		} else {
-			verbosePrint(fmt.Sprintf("main: path spec dir '%s', mode: %v.", path.Dir(paths[i].path), pathInfo.Mode()))
-			// Attempt to open/create a new file in the directory.
-			// But just because *we* cannot _write_ to it does not mean the dropbox process is not running!?
-			// All the dropbox process needs to do is read files in that directory.
-			if !(path.Dir(paths[i].path) == ".") {
-				if testFile, err := os.OpenFile(path.Dir(paths[i].path)+"/test-file", os.O_RDWR|os.O_CREATE, 0644); err != nil {
-					log.Printf("Warning: Unable to create a new file in '%s' for dropbox ID %d (%v). Please correct this directory's ownership and/or permissions.\n", path.Dir(paths[i].path), paths[i].id, err)
-					errorCount++
-					// This is just a warning, NOT an error.
-				} else {
-					verbosePrint(fmt.Sprintf("main: path '%s' (dropbox ID %d) is writable.", path.Dir(paths[i].path), paths[i].id))
-					testFile.Close()
-					os.Remove(path.Dir(paths[i].path) + "/test-file")
-				}
-			} else {
-				debugPrint("main: path spec should not be blank. How did we get here?")
-			}
+			// Remove this entry in the paths slice because the dropbox is invalid.
+			paths = p.removePathSpec(i, paths)
+			continue
+		} else if !filePatternOK(path.Base(paths[i].path), paths[i].id) {
+			errorCount++
+			// But the dropbox will be running in spite of a bogus file pattern...
 		}
 
 		// Check (and attempt to correct) the dropbox LOG_PATH directory (we check the actual file below).
-		if !validPath.MatchString(paths[i].logPath) {
-			returnError = errors.New("empty or invalid file path")
-			log.Printf("Error: Dropbox Log Path spec '%s' for dropbox ID %d is invalid (%v). Correct this in order to log activity for this dropbox.\n", paths[i].logPath, paths[i].id, returnError)
+		if !filePathOK(path.Dir(paths[i].logPath), paths[i].id) {
 			errorCount++
 			// Remove this entry in the paths slice because the dropbox is unlikely to be running.
 			paths = p.removePathSpec(i, paths)
-		} else {
-			if pathInfo, err := os.Stat(path.Dir(paths[i].logPath)); os.IsNotExist(err) {
-				log.Printf("Log directory '%s' does not seem to exist. I'll try to create it.\n", path.Dir(paths[i].logPath))
-				err = os.MkdirAll(path.Dir(paths[i].logPath), 0755)
-				if err != nil {
-					log.Printf("Unable to create log path directory '%s' (%v).\n", path.Dir(paths[i].logPath), err)
-					errorCount++
-					// Remove this entry in the paths slice because the dropbox is unlikely to be running.
-					paths = p.removePathSpec(i, paths)
-				} else {
-					verbosePrint(fmt.Sprintf("main: Successfully created '%s'.", path.Dir(paths[i].logPath)))
-				}
-			} else if os.IsPermission(err) {
-				log.Printf("Log path directory '%s' is not readable (%v). You will need to fix it.\n", path.Dir(paths[i].logPath), err)
-				errorCount++
-				// Remove this entry from the slice because the dropbox is unlikely to be running.
-				paths = p.removePathSpec(i, paths)
-			} else if err != nil {
-				log.Printf("Unexpected error on stat(2) of '%s': '%v'.\n", path.Dir(paths[i].logPath), err)
-				errorCount++
-				// Remove this entry in the paths slice because the dropbox is unlikely to be running.
-				paths = p.removePathSpec(i, paths)
-			} else {
-				debugPrint(fmt.Sprintf("main: log dir '%s', mode: %v.", path.Dir(paths[i].logPath), pathInfo.Mode()))
-				// The LOG_PATH is accessible, make sure the log FILE is accessible and writable.
-				if pathInfo, err = os.Stat(paths[i].logPath); err != nil {
-					log.Printf("Error: Could not access log file '%s' (%v). Is rdcatchd(8) running?\n", paths[i].logPath, err)
-					errorCount++
-					// Remove this entry from the slice because the dropbox is unlikely to be running.
-					paths = p.removePathSpec(i, paths)
-				} else if os.IsPermission(err) {
-					log.Printf("Warning: Could not access log file '%s' (%v). I will try to correct this...\n", paths[i].logPath, err)
-					if err = os.Chmod(path.Dir(paths[i].logPath), 0755); os.IsPermission(err) {
-						log.Printf("Could not update permission on directory '%s' (%v). Please correct this situation.\n", path.Dir(paths[i].logPath), err)
-						errorCount++
-						// Remove this entry from the slice because the dropbox is unlikely to be running.
-						paths = p.removePathSpec(i, paths)
-					} else if err != nil {
-						log.Printf("Unexpected error when trying to correct permission on '%s' (%v).", path.Dir(paths[i].logPath), err)
-						errorCount++
-						// Remove this entry from the slice because the dropbox is unlikely to be running.
-						paths = p.removePathSpec(i, paths)
-					}
-				} else { // TODO: probably other errors to check for here.
-					// We have permission to stat the file, but do we have permission to write to it?
-					debugPrint(fmt.Sprintf("main: log file exists '%s': mode: %v.", paths[i].logPath, pathInfo.Mode()))
-					if logPath, err := os.OpenFile(paths[i].logPath, os.O_RDWR, 0); err != nil {
-						log.Printf("Error: Unable to open dropbox log file for dropbox ID %d (%v). Please correct this file's ownership and/or permissions.\n", paths[i].id, err)
-						errorCount++
-						// Remove this entry from the slice because the dropbox is unlikely to be running.
-						paths = p.removePathSpec(i, paths)
-					} else {
-						verbosePrint(fmt.Sprintf("main: log_path '%s' (dropbox ID %d) is writable.", paths[i].logPath, paths[i].id))
-						logPath.Close()
-					}
-				}
-			}
+			continue
+		}
+		if !fileOK(paths[i].logPath, paths[i].id) {
+			errorCount++
+			// Remove this entry in paths[] because the dropbox is unlikely to be running.
+			paths = p.removePathSpec(i, paths)
 		}
 	}
 
@@ -191,7 +213,7 @@ func main() {
 		log.Fatalf("Trouble getting the current list of running processes (%v).\n", returnError)
 	}
 	// Iterate over paths and processes to match them up.
-	// We'll have to restart rdimport(8) if any path is missing a running process
+	// We'll restart rdimport(8) if any path is missing a running process
 	for i := range paths {
 		for p := range processList {
 			if pName, _ := processList[p].Name(); pName == "rdimport" {
