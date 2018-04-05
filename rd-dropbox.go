@@ -61,20 +61,21 @@ func filePathOK(p string, id int) bool {
 		// Attempt to open/create a new file in the directory.
 		// But just because *we* cannot _write_ to it does not mean the dropbox process is not running!?
 		// All the dropbox process needs to do is read files in that directory.
-		if !(p == ".") {
-			if testFile, err := os.OpenFile(p+"/test-file", os.O_RDWR|os.O_CREATE, 0644); err != nil {
-				log.Printf("Warning: Unable to create a new file in '%s' for dropbox ID %d (%v). Please correct this directory's ownership and/or permissions.\n", p, id, err)
-				return false
-				// This is just a warning, NOT an error.
-			} else {
-				verbosePrint(fmt.Sprintf("filePathOK: path '%s' (dropbox ID %d) is writable.", p, id))
-				testFile.Close()
-				os.Remove(p + "/test-file")
-			}
-		} else {
+		if p == "." {
 			debugPrint("filePathOK: path spec should not be blank. How did we get here?")
 			return false
 		}
+		var testFile *os.File
+		var err error
+		if testFile, err = os.OpenFile(p+"/test-file", os.O_RDWR|os.O_CREATE, 0644); err != nil {
+			log.Printf("Warning: Unable to create a new file in '%s' for dropbox ID %d (%v). Please correct this directory's ownership and/or permissions.\n", p, id, err)
+			return false
+			// This is just a warning, NOT an error.
+		}
+
+		verbosePrint(fmt.Sprintf("filePathOK: path '%s' (dropbox ID %d) is writable.", p, id))
+		testFile.Close()
+		os.Remove(p + "/test-file")
 	}
 
 	return true
